@@ -1,9 +1,8 @@
 # 🖥️ Lenovo Case Tracker
 ### Fast, lightweight Lenovo case and parts tracking tool
 
-```markdown
-![Release](https://img.shields.io/github/v/release/Floodplain4/Lenovo_Console)
-![Downloads](https://img.shields.io/github/downloads/Floodplain4/Lenovo_Console/total)
+[![Release](https://img.shields.io/github/v/release/Floodplain4/Lenovo_Console)](https://github.com/Floodplain4/Lenovo_Console/releases)
+[![Downloads](https://img.shields.io/github/downloads/Floodplain4/Lenovo_Console/total)](https://github.com/Floodplain4/Lenovo_Console/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![Built With](https://img.shields.io/badge/built%20with-PySide6-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
