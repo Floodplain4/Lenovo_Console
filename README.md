@@ -18,7 +18,7 @@
 
 ## 🚀 Download
 
-👉 **[Download Latest Release](https://github.com/Floodplain4/Lenovo_Console/releases/tag/V2.3)**
+👉 **[Download Latest Release](https://github.com/Floodplain4/Lenovo_Console/releases/tag/2.3)**
 
 > ⚠️ Windows may display a SmartScreen warning on first run.
 > Click **"More Info" → "Run Anyway"**.
