@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Lenovo Case Tracker"
-APP_VERSION = "v2.2.8"
+APP_VERSION = "v2.3"
 LOG_FILE = "lcd_log.csv"
 BACKUP_DIR = "backups"
 ICON_FILE = "lenovo_case_tracker_icon.ico"
@@ -317,12 +317,14 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.log_file = LOG_FILE
-        self.settings = QSettings("OpenAI", "LenovoCaseTracker")
+        self.settings = QSettings("Tyler Ledbetter", "LenovoCaseTracker")
         initialize_log(self.log_file)
 
         self.show_complete_entries = True
         self.sort_column: Optional[int] = None
         self.sort_descending = False
+        self.last_search_query = ""
+        self.last_search_row = -1
 
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
         self.resize(1500, 920)
@@ -987,8 +989,15 @@ class MainWindow(QMainWindow):
     def search_log(self) -> None:
         query = self.search_edit.text().strip().lower()
         if not query:
+            self.last_search_query = ""
+            self.last_search_row = -1
             return
 
+        if query != self.last_search_query:
+            self.last_search_query = query
+            self.last_search_row = -1
+
+        matches = []
         for row in range(self.table.rowCount()):
             values = []
             for col in range(self.table.columnCount()):
@@ -996,13 +1005,25 @@ class MainWindow(QMainWindow):
                 values.append(item.text().lower() if item else "")
             searchable_text = " ".join(values)
             if query in searchable_text:
-                self.table.selectRow(row)
-                self.table.scrollToItem(self.table.item(row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
-                self.set_status_message("Search match selected.")
-                return
+                matches.append(row)
 
-        QMessageBox.information(self, "No Match", "No matching entries found.")
-        self.set_status_message("No search match found.")
+        if not matches:
+            self.last_search_row = -1
+            QMessageBox.information(self, "No Match", "No matching entries found.")
+            self.set_status_message("No search match found.")
+            return
+
+        next_row = matches[0]
+        for match_row in matches:
+            if match_row > self.last_search_row:
+                next_row = match_row
+                break
+
+        self.last_search_row = next_row
+        self.table.selectRow(next_row)
+        self.table.scrollToItem(self.table.item(next_row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+        match_position = matches.index(next_row) + 1
+        self.set_status_message(f"Search match {match_position} of {len(matches)} selected.")
 
     def copy_serial_number(self) -> None:
         selected = self.selected_row_keys()
@@ -1092,7 +1113,7 @@ class MainWindow(QMainWindow):
             serial_match = re.search(r"Serial\s*Number\s*[:\s]*([A-Z0-9]{7,10})", clipboard_text, re.IGNORECASE)
 
         if serial_match:
-            data["Serial"] = serial_match.group(1)
+            data["Serial"] = serial_match.group(1).upper()
 
         return data
 
@@ -1330,7 +1351,7 @@ class MainWindow(QMainWindow):
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    app.setOrganizationName("OpenAI")
+    app.setOrganizationName("Tyler Ledbetter")
     app.setStyle("Fusion")
 
     icon_path = resource_path(ICON_FILE)
