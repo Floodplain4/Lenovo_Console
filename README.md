@@ -126,16 +126,19 @@ python Lenovo_Case_Tracker2.28.py
 Data is stored locally in a CSV file (lcd_log.csv)
 Changes are written instantly
 No database or internet connection required
+
 ---
 ⚠️ Notes
 First launch may take a few seconds (PyInstaller one-file build)
 This tool is designed for internal workflow use
 All included CSV files are for demonstration purposes only
+
 ---
 🧑‍💻 About This Project
 
 This started as a personal tool to improve efficiency in a real-world IT workflow environment.
 The goal was to build something fast, practical, and easy to use — without unnecessary complexity.
+
 ---
 📌 Future Improvements
 Installer polish and signing
