@@ -1,10 +1,10 @@
 # 🖥️ Lenovo Case Tracker
 
-### Fast, lightweight Lenovo case and parts tracking tool
+A lightweight desktop utility for tracking Lenovo repair cases, parts, and workflow status in real-world IT environments.
 
 [![Release](https://img.shields.io/github/v/release/Floodplain4/Lenovo_Console)](https://github.com/Floodplain4/Lenovo_Console/releases)
 [![Downloads](https://img.shields.io/github/downloads/Floodplain4/Lenovo_Console/total)](https://github.com/Floodplain4/Lenovo_Console/releases)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![OS](https://img.shields.io/badge/OS-Windows-blue?logo=windows)
 ![Built With](https://img.shields.io/badge/built%20with-PySide6-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -18,9 +18,9 @@
 
 ## 🚀 Download
 
-👉 **[Download Latest Release](https://github.com/Floodplain4/Lenovo_Console/releases/tag/2.3)**
+👉 **[Download Latest Release](https://github.com/Floodplain4/Lenovo_Console/releases/latest)**
 
-> ⚠️ Windows may display a SmartScreen warning on first run.
+> ⚠️ Windows may display a SmartScreen warning on first run.  
 > Click **"More Info" → "Run Anyway"**.
 
 ---
@@ -28,107 +28,75 @@
 ## ✨ Features
 
 ### 📋 Case Management
-
-* Add entries using:
-
-  * Work Order number
-  * Serial Number
-  * Status
-  * Notes
-* Structured tracking stored in CSV format
+- Track cases using Work Order and Serial Number  
+- Status tracking with notes  
+- Structured CSV-based logging  
 
 ---
 
 ### 🔧 Parts Tracking
-
-* Quick-select buttons for common parts:
-
-  * Top lid
-  * Hinges
-  * Bezel
-  * LCD
-  * Keyboard
-  * Motherboard
-* Optional **“Other”** field for uncommon parts
+- Quick-select buttons for common parts:
+  - Top lid, Hinges, Bezel, LCD, Keyboard, Motherboard  
+- Optional **“Other”** field for flexibility  
 
 ---
 
-### ⚡ Fast Workflow Tools
-
-* **Paste from Lenovo ticket**
-
-  * Automatically parses clipboard text
-  * Auto-fills Work Order & Serial Number
-  * Detects parts from case descriptions
+### ⚡ Workflow Automation
+- Paste from Lenovo ticket:
+  - Parses clipboard text  
+  - Auto-fills Work Order and Serial Number  
+  - Detects parts from descriptions  
 
 ---
 
-### 📊 Dashboard Overview
-
-* Real-time stats for:
-
-  * Total entries
-  * Ordered
-  * Pending
-  * Replaced
-  * Returned
-  * Complete
-* Visual status indicators
+### 📊 Dashboard
+- Real-time stats:
+  - Total, Ordered, Pending, Replaced, Returned, Complete  
+- Visual indicators for quick status checks  
 
 ---
 
 ### 🔄 Entry Management
-
-* Update status with dropdown + button
-* Edit entries via double-click
-* Delete single or multiple entries
-* Bulk actions with confirmation
+- Update status via dropdown  
+- Edit entries with double-click  
+- Bulk actions with confirmation  
+- Delete single or multiple entries  
 
 ---
 
-### 🔍 Filtering & Search
-
-* Search across all fields
-* Filter by:
-
-  * Status
-  * Part type
-* Dynamic log updates
+### 🔍 Search & Filtering
+- Search across all fields  
+- Filter by status or part type  
+- Instant log updates  
 
 ---
 
 ### 📁 Data Handling
-
-* Automatic logging to `lcd_log.csv`
-* Import existing logs
-* Export for backup
-* Automatic backup before import
+- Local CSV storage (`lcd_log.csv`)  
+- Import and export support  
+- Automatic backup before import  
 
 ---
 
-### 🧠 Quality-of-Life Features
-
-* Duplicate entry detection
-* Timestamp updates on changes
-* Right-click context menu:
-
-  * Copy serial number
-  * Copy work order
-  * Copy full case summary
-* LCD script helper window for quick ticket notes
+### 🧠 Quality of Life
+- Duplicate detection  
+- Automatic timestamp updates  
+- Right-click actions:
+  - Copy serial  
+  - Copy work order  
+  - Copy full case summary  
+- Built-in LCD script helper  
 
 ---
 
 ## 🛠 Installation
 
-### Option 1: Download EXE
-
-1. Download from the release page
-2. Run the `.exe` file
-3. If prompted by Windows:
-
-   * Click **More Info**
-   * Click **Run Anyway**
+### Option 1: Download EXE (Recommended)
+1. Download from the release page  
+2. Run the `.exe` file  
+3. If prompted:
+   - Click **More Info**
+   - Click **Run Anyway**
 
 ---
 
@@ -138,7 +106,6 @@
 pip install PySide6 pyperclip
 python src/lenovo_case_tracker.py
 ```
-
 ---
 
 ## 📦 How It Works
