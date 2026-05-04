@@ -3,7 +3,7 @@
 A lightweight desktop utility for tracking Lenovo repair cases, parts, and workflow status in real-world IT environments.
 
 [![Release](https://img.shields.io/github/v/release/Floodplain4/Lenovo_Console)](https://github.com/Floodplain4/Lenovo_Console/releases)
-![Downloads](https://img.shields.io/github/downloads/Floodplain4/Lenovo_Console/2.3/total)](https://github.com/Floodplain4/Lenovo_Console/releases)
+![Downloads](https://img.shields.io/github/downloads/Floodplain4/Lenovo_Console/2.3/total)
 ![OS](https://img.shields.io/badge/OS-Windows-blue?logo=windows)
 ![Built With](https://img.shields.io/badge/built%20with-PySide6-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
