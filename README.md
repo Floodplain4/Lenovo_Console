@@ -12,7 +12,7 @@
 
 ## 🎬 Demo
 
-![Lenovo Console Demo](Lenovo%20Console%20Demo.gif)
+![Lenovo Console Demo](assets/demo.gif)
 
 ---
 
@@ -136,7 +136,7 @@
 
 ```bash
 pip install PySide6 pyperclip
-python Lenovo_Case_Tracker.py
+python src/lenovo_case_tracker.py
 ```
 
 ---
