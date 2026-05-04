@@ -12,7 +12,7 @@
 
 ## 🎬 Demo
 
-![Lenovo Console Demo](https://raw.githubusercontent.com/Floodplain4/Lenovo_Console/main/assets/demo.gif)
+![Lenovo Console Demo](assets/demo.gif)
 
 ---
 
