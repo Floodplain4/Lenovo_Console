@@ -5,13 +5,22 @@ import re
 import sys
 import shutil
 import ctypes
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Set
 
 try:
     import pyperclip
 except ImportError:
     pyperclip = None
+
+
+try:
+    import win32com.client
+    import pythoncom
+except ImportError:
+    win32com = None
+    pythoncom = None
 
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QAction, QColor, QBrush, QIcon, QTextCursor
@@ -42,7 +51,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Lenovo Case Tracker"
-APP_VERSION = "v2.3"
+APP_VERSION = "v2.4.3"
 LOG_FILE = "lcd_log.csv"
 BACKUP_DIR = "backups"
 ICON_FILE = "lenovo_case_tracker_icon.ico"
@@ -76,6 +85,71 @@ PART_KEYWORDS = {
     "Keyboard": [r"\bkeyboard\b", r"\bkeys?\b"],
     "Motherboard": [r"\bmotherboard\b", r"\bmainboard\b", r"\bsystem board\b"],
 }
+
+
+EMAIL_TRIAGE_KEYWORDS = [
+    "help",
+    "stop by",
+    "question",
+    "computer",
+    "chromebook",
+    "laptop",
+    "printer",
+    "projector",
+    "cleartouch",
+    "screen",
+    "broken",
+    "not working",
+    "won't turn on",
+    "charger",
+    "keyboard",
+    "wifi",
+    "login",
+]
+
+EMAIL_TRIAGE_EXCLUDE_KEYWORDS = [
+    "automatic reply",
+    "out of office",
+    "newsletter",
+    "no-reply",
+    "noreply",
+]
+
+EMAIL_TRIAGE_REPLY_TEMPLATE = (
+    "Hi,\n\n"
+    "Thanks for reaching out. To make sure this is tracked properly and handled as quickly as possible, "
+    "please submit a ticket through the official helpdesk system.\n\n"
+    "Ticket instructions: http://webhelp.cobbk12.org\n\n"
+    "Thanks,\n"
+    "Tyler"
+)
+
+EMAIL_SCORE_WEIGHTS = {
+    "help": 18,
+    "stop by": 16,
+    "not working": 24,
+    "broken": 24,
+    "won't turn on": 28,
+    "screen": 18,
+    "lcd": 22,
+    "keyboard": 18,
+    "charger": 15,
+    "chromebook": 12,
+    "laptop": 12,
+    "computer": 10,
+    "printer": 12,
+    "login": 12,
+    "wifi": 12,
+}
+
+EMAIL_ISSUE_PATTERNS = [
+    ("Cracked screen / LCD", ["cracked", "screen", "lcd", "display"], ["LCD", "Bezel", "Hinges"]),
+    ("Display flicker / lines", ["flicker", "lines", "display", "screen"], ["LCD", "Motherboard"]),
+    ("No power", ["won't turn on", "will not turn on", "no power", "dead"], ["Motherboard"]),
+    ("Keyboard issue", ["keyboard", "key", "keys", "typing"], ["Keyboard"]),
+    ("Hinge / lid damage", ["hinge", "lid", "cover", "won't close", "will not close"], ["Hinges", "Top lid", "Bezel"]),
+    ("Charger / power adapter", ["charger", "charging", "adapter", "plugged in"], []),
+]
 
 
 def resource_path(relative_path: str) -> str:
@@ -193,6 +267,430 @@ def detect_parts_from_text(text: str) -> Set[str]:
                 detected.add(part_name)
                 break
     return detected
+
+
+
+
+def business_days_between(start_date: datetime, end_date: datetime) -> int:
+    """Count business days after start_date up to end_date."""
+    if start_date > end_date:
+        return 0
+    days = 0
+    current = start_date.date()
+    end = end_date.date()
+    while current < end:
+        current = current.fromordinal(current.toordinal() + 1)
+        if current.weekday() < 5:
+            days += 1
+    return days
+
+
+def parse_timestamp(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%m/%d/%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(value.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_case_fields_from_text(text: str) -> Tuple[str, str]:
+    """Best-effort parser for work order and serial from pasted emails/tickets."""
+    work_order = ""
+    serial = ""
+
+    wo_patterns = [
+        r"\bWO\s*[:#-]?\s*(\d{6,10})\b",
+        r"\bwork\s*order\s*[:#-]?\s*(\d{6,10})\b",
+        r"\bticket\s*[:#-]?\s*(\d{6,10})\b",
+        r"\bcase\s*[:#-]?\s*(\d{6,10})\b",
+    ]
+    for pattern in wo_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            work_order = match.group(1)
+            break
+
+    serial_patterns = [
+        r"Serial\s*Number\s*[:\s-]*([A-Z0-9]{7,10})",
+        r"\bSerial\s*[:#-]?\s*([A-Z0-9]{7,10})\b",
+        r"\b(PW[A-Z0-9]{5,8})\b",
+        r"\b(PF[A-Z0-9]{5,8})\b",
+    ]
+    for pattern in serial_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            serial = match.group(1).upper()
+            break
+
+    return work_order, serial
+
+
+def detect_issue_patterns(text: str) -> List[Tuple[str, List[str]]]:
+    lowered = text.lower()
+    matches = []
+    for label, keywords, suggested_parts in EMAIL_ISSUE_PATTERNS:
+        if any(keyword in lowered for keyword in keywords):
+            matches.append((label, suggested_parts))
+    return matches
+
+
+def analyze_email_details(subject: str, body: str) -> dict:
+    """
+    Review-only email triage helper.
+    Returns a scored, explainable analysis without sending or modifying email.
+    """
+    combined = f"{subject}\n{body}".lower()
+    exclude_matches = [kw for kw in EMAIL_TRIAGE_EXCLUDE_KEYWORDS if kw in combined]
+    keyword_matches = [kw for kw in EMAIL_TRIAGE_KEYWORDS if kw in combined]
+    weighted_matches = []
+    score = 0
+
+    for keyword, weight in EMAIL_SCORE_WEIGHTS.items():
+        if keyword in combined:
+            score += weight
+            weighted_matches.append((keyword, weight))
+
+    detected_parts = detect_parts_from_text(combined)
+    issue_patterns = detect_issue_patterns(combined)
+    for _label, suggested_parts in issue_patterns:
+        score += 12
+        for part in suggested_parts:
+            if part in PART_OPTIONS:
+                detected_parts.add(part)
+
+    if detected_parts:
+        score += min(20, len(detected_parts) * 8)
+
+    if exclude_matches:
+        score = max(0, score - 45)
+
+    score = max(0, min(100, score))
+
+    reasons = []
+    if exclude_matches:
+        reasons.append("Exclude keyword(s): " + ", ".join(exclude_matches))
+    if weighted_matches:
+        reasons.append("Score signals: " + ", ".join(f"{kw} (+{weight})" for kw, weight in weighted_matches))
+    elif keyword_matches:
+        reasons.append("Matched support keyword(s): " + ", ".join(keyword_matches))
+    if issue_patterns:
+        reasons.append("Issue pattern(s): " + ", ".join(label for label, _parts in issue_patterns))
+    if detected_parts:
+        reasons.append("Possible Lenovo part(s): " + ", ".join(sorted(detected_parts)))
+    if not reasons:
+        reasons.append("No configured support signals were detected.")
+
+    if exclude_matches and score < 45:
+        suggestion = "Ignore / Low Priority"
+    elif score >= 70:
+        suggestion = "Likely Support Request"
+    elif score >= 40:
+        suggestion = "Possible Support Request"
+    elif detected_parts:
+        suggestion = "Possible Device Issue"
+    else:
+        suggestion = "No Strong Match"
+
+    work_order, serial = parse_case_fields_from_text(f"{subject}\n{body}")
+
+    return {
+        "suggestion": suggestion,
+        "reason": " | ".join(reasons),
+        "keywords": keyword_matches,
+        "detected_parts": detected_parts,
+        "issue_patterns": issue_patterns,
+        "score": score,
+        "work_order": work_order,
+        "serial": serial,
+    }
+
+
+def analyze_email_text(subject: str, body: str) -> Tuple[str, str, List[str], Set[str]]:
+    """Backward-compatible wrapper for older email triage calls."""
+    details = analyze_email_details(subject, body)
+    return details["suggestion"], details["reason"], details["keywords"], details["detected_parts"]
+
+
+class EmailTriageDialog(QDialog):
+    """
+    Safe email triage window.
+    This reviews unread Outlook messages or pasted email text and suggests an action.
+    It does not automatically reply, mark messages read, or modify the mailbox.
+    """
+    def __init__(self, parent: "MainWindow") -> None:
+        super().__init__(parent)
+        self.parent_window = parent
+        self.setWindowTitle("Email Triage")
+        self.resize(1180, 700)
+        self.scanned_messages = []
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        intro = QLabel(
+            "Review-only email triage. Scan unread Outlook email or paste a message below. "
+            "This tool only suggests actions and copies text; it does not send replies."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #d1d5db;")
+        layout.addWidget(intro)
+
+        button_row = QHBoxLayout()
+        scan_button = QPushButton("Scan Unread Outlook Email")
+        scan_button.clicked.connect(self.scan_unread_outlook)
+        analyze_button = QPushButton("Analyze Pasted Text")
+        analyze_button.clicked.connect(self.analyze_current_text)
+        copy_reply_button = QPushButton("Copy Ticket Reply")
+        copy_reply_button.clicked.connect(self.copy_ticket_reply)
+        create_case_button = QPushButton("Send to Case Form")
+        create_case_button.clicked.connect(self.send_to_case_form)
+        open_selected_button = QPushButton("Open Selected Email")
+        open_selected_button.clicked.connect(self.open_selected_email)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+
+        for button in (scan_button, analyze_button, copy_reply_button, create_case_button, open_selected_button, close_button):
+            button.setFixedHeight(30)
+            button_row.addWidget(button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.email_table = QTableWidget(0, 6)
+        self.email_table.setHorizontalHeaderLabels(["Sender", "Subject", "Received", "Score", "Suggestion", "Reason"])
+        self.email_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.email_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.email_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.email_table.verticalHeader().setVisible(False)
+        self.email_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.email_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.email_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.email_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.email_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.email_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.email_table.itemSelectionChanged.connect(self.load_selected_message)
+        layout.addWidget(self.email_table, 1)
+
+        manual_group = QGroupBox("Manual Email Analysis")
+        manual_layout = QGridLayout(manual_group)
+        manual_layout.setHorizontalSpacing(10)
+        manual_layout.setVerticalSpacing(8)
+
+        self.sender_edit = QLineEdit()
+        self.sender_edit.setPlaceholderText("Sender")
+        self.subject_edit = QLineEdit()
+        self.subject_edit.setPlaceholderText("Subject")
+        self.body_edit = QPlainTextEdit()
+        self.body_edit.setPlaceholderText("Paste email body here")
+        self.body_edit.setFixedHeight(115)
+        self.result_box = QPlainTextEdit()
+        self.result_box.setReadOnly(True)
+        self.result_box.setFixedHeight(100)
+        self.part_tags_label = QLabel("Detected parts: None")
+        self.part_tags_label.setWordWrap(True)
+        self.part_tags_label.setStyleSheet("color: #d1d5db;")
+        self.pattern_tags_label = QLabel("Issue patterns: None")
+        self.pattern_tags_label.setWordWrap(True)
+        self.pattern_tags_label.setStyleSheet("color: #d1d5db;")
+
+        manual_layout.addWidget(QLabel("Sender:"), 0, 0)
+        manual_layout.addWidget(self.sender_edit, 0, 1)
+        manual_layout.addWidget(QLabel("Subject:"), 0, 2)
+        manual_layout.addWidget(self.subject_edit, 0, 3)
+        manual_layout.addWidget(QLabel("Body:"), 1, 0)
+        manual_layout.addWidget(self.body_edit, 1, 1, 1, 3)
+        manual_layout.addWidget(QLabel("Result:"), 2, 0)
+        manual_layout.addWidget(self.result_box, 2, 1, 1, 3)
+        manual_layout.addWidget(QLabel("Tags:"), 3, 0)
+        manual_layout.addWidget(self.part_tags_label, 3, 1, 1, 3)
+        manual_layout.addWidget(QLabel("Patterns:"), 4, 0)
+        manual_layout.addWidget(self.pattern_tags_label, 4, 1, 1, 3)
+        manual_layout.setColumnStretch(1, 1)
+        manual_layout.setColumnStretch(3, 1)
+        layout.addWidget(manual_group)
+
+    def scan_unread_outlook(self) -> None:
+        if win32com is None or pythoncom is None:
+            QMessageBox.warning(
+                self,
+                "Missing Dependency",
+                "Outlook scanning requires pywin32.\n\nInstall it with:\npip install pywin32",
+            )
+            return
+
+        try:
+            pythoncom.CoInitialize()
+            outlook = win32com.client.Dispatch("Outlook.Application")
+            namespace = outlook.GetNamespace("MAPI")
+            inbox = namespace.GetDefaultFolder(6)
+            messages = inbox.Items.Restrict("[UnRead] = True")
+
+            self.scanned_messages = []
+            for message in list(messages)[:50]:
+                try:
+                    subject = str(message.Subject or "")
+                    body = str(message.Body or "")
+                    sender = self.get_sender_email(message)
+                    received = str(message.ReceivedTime)
+                    details = analyze_email_details(subject, body)
+                    self.scanned_messages.append({
+                        "sender": sender,
+                        "subject": subject,
+                        "body": body,
+                        "received": received,
+                        "suggestion": details["suggestion"],
+                        "reason": details["reason"],
+                        "score": details["score"],
+                        "detected_parts": sorted(details["detected_parts"]),
+                        "issue_patterns": [label for label, _parts in details["issue_patterns"]],
+                        "work_order": details["work_order"],
+                        "serial": details["serial"],
+                        "entry_id": str(message.EntryID),
+                    })
+                except Exception:
+                    continue
+
+            self.refresh_table()
+            self.parent_window.set_email_scanned_count(len(self.scanned_messages))
+            self.parent_window.set_status_message(f"Email triage scanned {len(self.scanned_messages)} unread messages.")
+        except Exception as e:
+            QMessageBox.critical(self, "Outlook Error", f"Could not scan Outlook:\n{str(e)}")
+        finally:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+
+    def get_sender_email(self, message) -> str:
+        try:
+            exchange_user = message.Sender.GetExchangeUser()
+            if exchange_user:
+                return str(exchange_user.PrimarySmtpAddress or "")
+        except Exception:
+            pass
+        try:
+            return str(message.SenderEmailAddress or "")
+        except Exception:
+            return ""
+
+    def refresh_table(self) -> None:
+        self.email_table.setRowCount(len(self.scanned_messages))
+        for row, message in enumerate(self.scanned_messages):
+            values = [
+                message.get("sender", ""),
+                message.get("subject", ""),
+                message.get("received", ""),
+                str(message.get("score", "")),
+                message.get("suggestion", ""),
+                message.get("reason", ""),
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.email_table.setItem(row, col, item)
+
+    def load_selected_message(self) -> None:
+        row = self.email_table.currentRow()
+        if row < 0 or row >= len(self.scanned_messages):
+            return
+        message = self.scanned_messages[row]
+        self.sender_edit.setText(message.get("sender", ""))
+        self.subject_edit.setText(message.get("subject", ""))
+        self.body_edit.setPlainText(message.get("body", ""))
+        self.result_box.setPlainText(
+            f"Suggestion: {message.get('suggestion', '')}\n"
+            f"Reason: {message.get('reason', '')}\n\n"
+            f"Suggested reply is available with Copy Ticket Reply."
+        )
+
+    def analyze_current_text(self) -> None:
+        subject = self.subject_edit.text().strip()
+        body = self.body_edit.toPlainText().strip()
+        suggestion, reason, _keywords, detected_parts = analyze_email_text(subject, body)
+        result = [f"Suggestion: {suggestion}", f"Reason: {reason}"]
+        if detected_parts:
+            result.append("Detected Lenovo part(s): " + ", ".join(sorted(detected_parts)))
+        result.append("\nSuggested reply is available with Copy Ticket Reply.")
+        self.result_box.setPlainText("\n".join(result))
+
+    def tag_html(self, values: List[str], color: str = "#1d4ed8") -> str:
+        if not values:
+            return "None"
+        chips = []
+        for value in values:
+            safe_value = str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            chips.append(
+                f"<span style='background:{color}; color:#ffffff; padding:3px 7px; "
+                f"border-radius:8px; margin-right:4px;'>{safe_value}</span>"
+            )
+        return " ".join(chips)
+
+    def update_triage_tags(self, parts: List[str], patterns: List[str]) -> None:
+        self.part_tags_label.setText("Detected parts: " + self.tag_html(parts, "#1d4ed8"))
+        self.pattern_tags_label.setText("Issue patterns: " + self.tag_html(patterns, "#92400e"))
+
+    def current_triage_details(self) -> dict:
+        subject = self.subject_edit.text().strip()
+        body = self.body_edit.toPlainText().strip()
+        return analyze_email_details(subject, body)
+
+    def send_to_case_form(self) -> None:
+        subject = self.subject_edit.text().strip()
+        body = self.body_edit.toPlainText().strip()
+        sender = self.sender_edit.text().strip()
+        if not subject and not body:
+            QMessageBox.warning(self, "No Email Text", "Select an email or paste text before sending to the case form.")
+            return
+
+        details = analyze_email_details(subject, body)
+        self.parent_window.prefill_case_from_email(
+            subject=subject,
+            body=body,
+            sender=sender,
+            work_order=details["work_order"],
+            serial=details["serial"],
+            detected_parts=details["detected_parts"],
+            issue_patterns=[label for label, _parts in details["issue_patterns"]],
+            score=details["score"],
+            suggestion=details["suggestion"],
+        )
+        self.parent_window.set_status_message("Email details sent to the case form for review.")
+
+    def copy_ticket_reply(self) -> None:
+        QApplication.clipboard().setText(EMAIL_TRIAGE_REPLY_TEMPLATE)
+        QMessageBox.information(self, "Copied", "Ticket reply copied to clipboard.")
+        self.parent_window.set_status_message("Email triage reply copied to clipboard.")
+
+    def open_selected_email(self) -> None:
+        row = self.email_table.currentRow()
+        if row < 0 or row >= len(self.scanned_messages):
+            QMessageBox.warning(self, "Selection Error", "Select an email first.")
+            return
+
+        if win32com is None or pythoncom is None:
+            QMessageBox.warning(self, "Missing Dependency", "Opening Outlook messages requires pywin32.")
+            return
+
+        entry_id = self.scanned_messages[row].get("entry_id", "")
+        if not entry_id:
+            QMessageBox.warning(self, "Missing Entry ID", "This scanned message does not have an EntryID.")
+            return
+
+        try:
+            pythoncom.CoInitialize()
+            outlook = win32com.client.Dispatch("Outlook.Application")
+            namespace = outlook.GetNamespace("MAPI")
+            message = namespace.GetItemFromID(entry_id)
+            message.Display()
+        except Exception as e:
+            QMessageBox.critical(self, "Outlook Error", f"Could not open selected email:\n{str(e)}")
+        finally:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
 class SelectAllPlainTextEdit(QPlainTextEdit):
@@ -346,8 +844,8 @@ class MainWindow(QMainWindow):
                 font-weight: 600;
                 border: 1px solid #2d3748;
                 border-radius: 6px;
-                margin-top: 10px;
-                padding-top: 12px;
+                margin-top: 6px;
+                padding-top: 8px;
                 background: #111827;
                 color: #f3f4f6;
             }
@@ -406,13 +904,13 @@ class MainWindow(QMainWindow):
                 font-weight: 600;
             }
             QLabel[role="statValue"] {
-                font-size: 13pt;
+                font-size: 11pt;
                 font-weight: 700;
                 color: #f9fafb;
                 background: transparent;
             }
             QLabel[role="statText"] {
-                font-size: 8pt;
+                font-size: 7pt;
                 color: #9ca3af;
                 background: transparent;
             }
@@ -425,6 +923,16 @@ class MainWindow(QMainWindow):
                 background: #1f2937;
                 border: 1px solid #374151;
                 border-radius: 6px;
+            }
+            QFrame#app_header {
+                background: #0f172a;
+                border: 1px solid #2d3748;
+                border-radius: 8px;
+            }
+            QFrame#quick_stats_panel {
+                background: #162132;
+                border: 1px solid #334155;
+                border-radius: 8px;
             }
             QFrame#stat_total { border-left: 3px solid #60a5fa; }
             QFrame#stat_ordered { border-left: 3px solid #3b82f6; }
@@ -461,9 +969,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.main_layout = QVBoxLayout(central)
-        self.main_layout.setContentsMargins(12, 12, 12, 10)
-        self.main_layout.setSpacing(8)
+        self.main_layout.setContentsMargins(8, 6, 8, 6)
+        self.main_layout.setSpacing(4)
 
+        self.build_header()
         self.build_overview()
         self.build_actions()
         self.build_table()
@@ -522,11 +1031,37 @@ class MainWindow(QMainWindow):
             }
         """
 
+    def build_header(self) -> None:
+        header = QFrame()
+        header.setProperty("card", True)
+        header.setObjectName("app_header")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(10, 4, 10, 4)
+        layout.setSpacing(8)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(1)
+        title = QLabel(f"{APP_NAME}")
+        title.setStyleSheet("font-size: 13pt; font-weight: 700; color: #f9fafb; background: transparent;")
+        subtitle = QLabel("Lenovo repair tracking, email triage, and follow-up visibility for field technicians")
+        subtitle.setStyleSheet("font-size: 7.5pt; color: #9ca3af; background: transparent;")
+        title_col.addWidget(title)
+        title_col.addWidget(subtitle)
+
+        version = QLabel(APP_VERSION)
+        version.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        version.setStyleSheet("color: #93c5fd; font-weight: 700; background: transparent;")
+
+        layout.addLayout(title_col, 1)
+        layout.addWidget(version)
+        header.setMaximumHeight(48)
+        self.main_layout.addWidget(header)
+
     def build_overview(self) -> None:
         overview = QGroupBox("Overview")
         overview.setContentsMargins(6, 10, 6, 6)
         layout = QVBoxLayout(overview)
-        layout.setSpacing(10)
+        layout.setSpacing(4)
 
         search_row = QHBoxLayout()
         search_row.addWidget(QLabel("Search:"))
@@ -547,8 +1082,8 @@ class MainWindow(QMainWindow):
             card.setObjectName(f"stat_{key.lower()}")
             card.setProperty("card", True)
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(10, 8, 10, 8)
-            card_layout.setSpacing(1)
+            card_layout.setContentsMargins(6, 4, 6, 4)
+            card_layout.setSpacing(0)
 
             value = QLabel("0")
             value.setProperty("role", "statValue")
@@ -557,13 +1092,57 @@ class MainWindow(QMainWindow):
             value.setAlignment(Qt.AlignmentFlag.AlignCenter)
             text.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            card.setFixedWidth(78)
+            card.setFixedSize(64, 48)
             card_layout.addWidget(value)
             card_layout.addWidget(text)
             stats_row.addWidget(card)
             self.stat_labels[key] = value
 
         stats_row.addStretch(1)
+
+        quick_panel = QFrame()
+        quick_panel.setObjectName("quick_stats_panel")
+        quick_panel.setProperty("card", True)
+        quick_layout = QGridLayout(quick_panel)
+        quick_layout.setContentsMargins(8, 5, 8, 5)
+        quick_layout.setHorizontalSpacing(10)
+        quick_layout.setVerticalSpacing(1)
+
+        quick_title = QLabel("Quick Stats")
+        quick_title.setStyleSheet("font-weight: 700; color: #f9fafb; background: transparent;")
+        quick_layout.addWidget(quick_title, 0, 0, 1, 3)
+
+        self.followup_count_label = QLabel("0")
+        self.repeat_serials_label = QLabel("0")
+        self.email_scanned_label = QLabel("0")
+        for label in (self.followup_count_label, self.repeat_serials_label, self.email_scanned_label):
+            label.setProperty("role", "statValue")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setStyleSheet("font-size: 10pt; font-weight: 700; color: #f9fafb; background: transparent;")
+
+        quick_layout.addWidget(self.followup_count_label, 1, 0)
+        quick_layout.addWidget(self.repeat_serials_label, 1, 1)
+        quick_layout.addWidget(self.email_scanned_label, 1, 2)
+        quick_layout.addWidget(QLabel("Follow-ups"), 2, 0)
+        quick_layout.addWidget(QLabel("Repeat Serials"), 2, 1)
+        quick_layout.addWidget(QLabel("Emails Scanned"), 2, 2)
+
+        self.review_followups_button = QPushButton("Review")
+        self.review_followups_button.setFixedHeight(24)
+        self.review_followups_button.clicked.connect(self.open_followup_review_window)
+        quick_layout.addWidget(self.review_followups_button, 3, 0, 1, 3)
+
+        for i in range(quick_layout.count()):
+            widget = quick_layout.itemAt(i).widget()
+            if isinstance(widget, QLabel) and widget not in (quick_title, self.followup_count_label, self.repeat_serials_label, self.email_scanned_label):
+                widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                widget.setStyleSheet("font-size: 8pt; color: #9ca3af; background: transparent;")
+
+        quick_panel.setMinimumWidth(290)
+        quick_panel.setMaximumWidth(330)
+        quick_panel.setMinimumHeight(86)
+        quick_panel.setMaximumHeight(94)
+        stats_row.addWidget(quick_panel)
         layout.addLayout(stats_row)
         self.main_layout.addWidget(overview)
 
@@ -583,6 +1162,8 @@ class MainWindow(QMainWindow):
         self.toggle_complete_button.clicked.connect(self.toggle_complete_entries)
         script_button = QPushButton("LCD Script")
         script_button.clicked.connect(self.open_lcd_script_window)
+        email_triage_button = QPushButton("Email Triage")
+        email_triage_button.clicked.connect(self.open_email_triage_window)
         copy_summary_button = QPushButton("Copy Case Summary")
         copy_summary_button.clicked.connect(self.copy_case_summary)
         about_button = QPushButton("About")
@@ -590,9 +1171,9 @@ class MainWindow(QMainWindow):
 
         for button in [
             refresh_button, export_button, import_button,
-            self.toggle_complete_button, script_button, copy_summary_button, about_button
+            self.toggle_complete_button, script_button, email_triage_button, copy_summary_button, about_button
         ]:
-            button.setFixedHeight(30)
+            button.setFixedHeight(26)
             row.addWidget(button)
 
         row.addStretch(1)
@@ -602,11 +1183,11 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Add New Entry")
         group.setContentsMargins(6, 10, 6, 6)
         layout = QVBoxLayout(group)
-        layout.setSpacing(8)
+        layout.setSpacing(3)
 
         top_grid = QGridLayout()
         top_grid.setHorizontalSpacing(10)
-        top_grid.setVerticalSpacing(6)
+        top_grid.setVerticalSpacing(3)
 
         self.work_order_edit = QLineEdit()
         self.work_order_edit.setMinimumWidth(280)
@@ -632,12 +1213,17 @@ class MainWindow(QMainWindow):
         layout.addLayout(top_grid)
 
         parts_group = QGroupBox("Parts")
+        parts_group.setFixedHeight(88)
         parts_layout = QGridLayout(parts_group)
+        parts_layout.setContentsMargins(8, 12, 8, 6)
+        parts_layout.setHorizontalSpacing(6)
+        parts_layout.setVerticalSpacing(4)
         self.part_buttons = {}
         for idx, part in enumerate(PART_OPTIONS):
             button = QPushButton(part)
             button.setCheckable(True)
-            button.setMinimumHeight(46)
+            button.setMinimumHeight(24)
+            button.setMaximumHeight(26)
             button.setStyleSheet(self.part_button_style(False))
             button.toggled.connect(lambda checked, b=button: b.setStyleSheet(self.part_button_style(checked)))
             self.part_buttons[part] = button
@@ -646,8 +1232,9 @@ class MainWindow(QMainWindow):
 
         notes_group = QGroupBox("Notes")
         notes_layout = QVBoxLayout(notes_group)
+        notes_layout.setContentsMargins(8, 10, 8, 6)
         self.notes_edit = QPlainTextEdit()
-        self.notes_edit.setFixedHeight(56)
+        self.notes_edit.setFixedHeight(36)
         notes_layout.addWidget(self.notes_edit)
         layout.addWidget(notes_group)
 
@@ -685,14 +1272,18 @@ class MainWindow(QMainWindow):
         delete_button.clicked.connect(self.handle_delete_entry)
         edit_button = QPushButton("Edit Entry")
         edit_button.clicked.connect(self.handle_edit_entry)
+        mark_followup_button = QPushButton("Mark Follow-up")
+        mark_followup_button.clicked.connect(self.mark_selected_followup)
 
         update_button.setFixedHeight(26)
         delete_button.setFixedHeight(26)
         edit_button.setFixedHeight(26)
+        mark_followup_button.setFixedHeight(26)
         row.addWidget(self.update_status_combo)
         row.addWidget(update_button)
         row.addWidget(delete_button)
         row.addWidget(edit_button)
+        row.addWidget(mark_followup_button)
         row.addStretch(1)
 
         self.main_layout.addWidget(group)
@@ -732,8 +1323,8 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setVisible(False)
         self.table.setSortingEnabled(False)
         self.table.setShowGrid(True)
-        self.table.setMinimumHeight(200)
-        self.table.setMaximumHeight(260)
+        self.table.setMinimumHeight(185)
+        self.table.setMaximumHeight(225)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -846,7 +1437,7 @@ class MainWindow(QMainWindow):
         for row in range(self.table.rowCount()):
             work_item = self.table.item(row, 0)
             serial_item = self.table.item(row, 1)
-            if work_item and serial_item and work_item.text().strip() == work_order.strip() and serial_item.text().strip() == serial_number.strip():
+            if work_item and serial_item and work_item.text().replace("⚠", "").strip() == work_order.strip() and serial_item.text().strip() == serial_number.strip():
                 self.table.selectRow(row)
                 self.table.scrollToItem(self.table.item(row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
                 self.set_status_message(f"Selected existing entry {work_order} / {serial_number}.")
@@ -855,6 +1446,9 @@ class MainWindow(QMainWindow):
     def selected_parts(self) -> List[str]:
         return [part for part, button in self.part_buttons.items() if button.isChecked()]
 
+    def clean_display_work_order(self, text: str) -> str:
+        return text.replace("⚠", "").strip()
+
     def selected_row_keys(self) -> List[Tuple[str, str]]:
         keys = []
         for index in self.table.selectionModel().selectedRows():
@@ -862,7 +1456,7 @@ class MainWindow(QMainWindow):
             work_order_item = self.table.item(row, 0)
             serial_item = self.table.item(row, 1)
             if work_order_item and serial_item:
-                keys.append((work_order_item.text().strip(), serial_item.text().strip()))
+                keys.append((self.clean_display_work_order(work_order_item.text()), serial_item.text().strip()))
         return keys
 
     def clear_add_entry_form(self) -> None:
@@ -1202,6 +1796,307 @@ class MainWindow(QMainWindow):
         self.stat_labels["Replaced"].setText(str(counts["Replaced"]))
         self.stat_labels["Returned"].setText(str(counts["Returned"]))
         self.stat_labels["Complete"].setText(str(counts["Complete"]))
+        self.update_quick_stats()
+
+    def followup_key(self, row: List[str]) -> str:
+        work_order = row[0].strip() if len(row) > 0 else ""
+        serial_number = row[1].strip().upper() if len(row) > 1 else ""
+        return f"{work_order}||{serial_number}"
+
+    def load_followup_snoozes(self) -> dict:
+        raw = self.settings.value("followup_snoozes", "{}")
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else {}
+        except Exception:
+            data = {}
+        now = datetime.now()
+        cleaned = {}
+        for key, value in data.items():
+            expires = parse_timestamp(value)
+            if expires and expires > now:
+                cleaned[key] = value
+        if cleaned != data:
+            self.settings.setValue("followup_snoozes", json.dumps(cleaned))
+        return cleaned
+
+    def save_followup_snoozes(self, data: dict) -> None:
+        self.settings.setValue("followup_snoozes", json.dumps(data))
+
+    def load_manual_followups(self) -> dict:
+        raw = self.settings.value("manual_followups", "{}")
+        try:
+            return json.loads(raw) if isinstance(raw, str) else {}
+        except Exception:
+            return {}
+
+    def save_manual_followups(self, data: dict) -> None:
+        self.settings.setValue("manual_followups", json.dumps(data))
+
+    def is_manually_marked_followup(self, row: List[str]) -> bool:
+        return self.followup_key(row) in self.load_manual_followups()
+
+    def mark_followup_for_row(self, row: List[str]) -> None:
+        key = self.followup_key(row)
+
+        # Manual follow-up should override any previous 24-hour snooze.
+        # Otherwise right-clicking a snoozed case looks like it did nothing.
+        snoozes = self.load_followup_snoozes()
+        if key in snoozes:
+            del snoozes[key]
+            self.save_followup_snoozes(snoozes)
+
+        manual = self.load_manual_followups()
+        manual[key] = current_timestamp()
+        self.save_manual_followups(manual)
+
+    def clear_manual_followup_for_row(self, row: List[str]) -> None:
+        manual = self.load_manual_followups()
+        key = self.followup_key(row)
+        if key in manual:
+            del manual[key]
+            self.save_manual_followups(manual)
+
+    def followup_reason_for_row(self, row: List[str]) -> str:
+        if self.is_manually_marked_followup(row):
+            return "Manually marked for follow-up"
+        if len(row) >= 5:
+            updated = parse_timestamp(row[4])
+            if updated:
+                days = business_days_between(updated, datetime.now())
+                return f"No timestamp update in {days} business days"
+        return "Needs follow-up"
+
+    def is_followup_snoozed(self, row: List[str]) -> bool:
+        snoozes = self.load_followup_snoozes()
+        expires_text = snoozes.get(self.followup_key(row))
+        expires = parse_timestamp(expires_text) if expires_text else None
+        return bool(expires and expires > datetime.now())
+
+    def snooze_followup_for_row(self, row: List[str], hours: int = 24) -> None:
+        snoozes = self.load_followup_snoozes()
+        expires = datetime.now() + timedelta(hours=hours)
+        snoozes[self.followup_key(row)] = expires.strftime("%Y-%m-%d %H:%M:%S")
+        self.save_followup_snoozes(snoozes)
+
+    def row_needs_followup(self, row: List[str]) -> bool:
+        if len(row) < 5:
+            return False
+        status = row[2].strip()
+        if status in {"Returned", "Complete"}:
+            return False
+        if self.is_followup_snoozed(row):
+            return False
+        if self.is_manually_marked_followup(row):
+            return True
+        updated = parse_timestamp(row[4])
+        if not updated:
+            return False
+        return business_days_between(updated, datetime.now()) >= 5
+
+    def cases_needing_followup(self) -> List[List[str]]:
+        rows = self.read_all_rows()
+        return [row for row in rows[1:] if self.row_needs_followup(row)]
+
+    def repeat_serial_count(self) -> int:
+        serial_counts = {}
+        rows = self.read_all_rows()
+        for row in rows[1:]:
+            if len(row) >= 2:
+                serial = row[1].strip().upper()
+                if serial:
+                    serial_counts[serial] = serial_counts.get(serial, 0) + 1
+        return sum(1 for count in serial_counts.values() if count >= 2)
+
+    def update_quick_stats(self) -> None:
+        if hasattr(self, "followup_count_label"):
+            followups = self.cases_needing_followup()
+            followup_count = len(followups)
+            self.followup_count_label.setText(str(followup_count))
+            self.repeat_serials_label.setText(str(self.repeat_serial_count()))
+            current_email_count = self.settings.value("email_scanned_count", 0, type=int)
+            self.email_scanned_label.setText(str(current_email_count))
+            if hasattr(self, "review_followups_button"):
+                self.review_followups_button.setEnabled(True)
+                self.review_followups_button.setText("Review")
+
+    def open_followup_review_window(self) -> None:
+        followups = self.cases_needing_followup()
+        if not followups:
+            QMessageBox.information(self, "Follow-ups", "No cases need follow-up right now.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Cases Needing Follow-up")
+        dialog.resize(760, 420)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(8)
+
+        intro = QLabel("These cases are flagged for follow-up because they were manually marked or have not had a timestamp update in 5 business days. Select one to open it, or select multiple rows to snooze them for 24 hours.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(["Work Order", "Serial Number", "Status", "Parts", "Timestamp", "Reason"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.setRowCount(len(followups))
+        for row_idx, row in enumerate(followups):
+            display_row = csv_row_to_display_row(row) or [row[0], row[1], row[2], "", "", row[4]]
+            values = [display_row[0], display_row[1], display_row[2], display_row[3], display_row[5], self.followup_reason_for_row(row)]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                item.setData(Qt.ItemDataRole.UserRole, row)
+                table.setItem(row_idx, col_idx, item)
+        layout.addWidget(table)
+
+        button_row = QHBoxLayout()
+        open_button = QPushButton("Select Case")
+        snooze_button = QPushButton("Snooze Selected 24 Hours")
+        close_button = QPushButton("Close")
+        button_row.addStretch(1)
+        button_row.addWidget(open_button)
+        button_row.addWidget(snooze_button)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        def selected_followup_rows():
+            selected = table.selectionModel().selectedRows()
+            if not selected:
+                QMessageBox.warning(dialog, "No Selection", "Select at least one follow-up case first.")
+                return []
+            rows = []
+            for selected_index in selected:
+                item = table.item(selected_index.row(), 0)
+                row_data = item.data(Qt.ItemDataRole.UserRole) if item else None
+                if row_data:
+                    rows.append(row_data)
+            return rows
+
+        def open_selected():
+            rows = selected_followup_rows()
+            if not rows:
+                return
+            row = rows[0]
+            dialog.accept()
+            self.select_existing_entry(row[0], row[1])
+
+        def snooze_selected():
+            rows = selected_followup_rows()
+            if not rows:
+                return
+            for row in rows:
+                self.snooze_followup_for_row(row, hours=24)
+            self.display_log()
+            self.update_dashboard()
+            self.set_status_message(f"Snoozed {len(rows)} follow-up case{'s' if len(rows) != 1 else ''} for 24 hours.")
+            dialog.accept()
+
+        open_button.clicked.connect(open_selected)
+        snooze_button.clicked.connect(snooze_selected)
+        close_button.clicked.connect(dialog.accept)
+        table.itemDoubleClicked.connect(lambda _item: open_selected())
+        dialog.exec()
+
+    def mark_selected_followup(self) -> None:
+        selected = self.selected_row_keys()
+        if not selected:
+            QMessageBox.warning(self, "Selection Error", "Please select at least one entry to mark for follow-up.")
+            return
+
+        rows = self.read_all_rows()
+        key_set = set(selected)
+        marked_count = 0
+        skipped_count = 0
+        for row in rows[1:]:
+            if len(row) >= 5 and (row[0].strip(), row[1].strip()) in key_set:
+                if row[2].strip() in {"Returned", "Complete"}:
+                    skipped_count += 1
+                    continue
+                self.mark_followup_for_row(row)
+                marked_count += 1
+
+        self.display_log()
+        self.update_dashboard()
+        if marked_count:
+            message = f"Marked {marked_count} case{'s' if marked_count != 1 else ''} for follow-up."
+            if skipped_count:
+                message += f" Skipped {skipped_count} returned/complete case{'s' if skipped_count != 1 else ''}."
+            self.set_status_message(message)
+            QMessageBox.information(self, "Follow-up", message)
+        else:
+            QMessageBox.information(self, "Follow-up", "No selected active cases could be marked for follow-up.")
+
+    def snooze_selected_followup(self) -> None:
+        selected = self.selected_row_keys()
+        if not selected:
+            QMessageBox.warning(self, "Selection Error", "Please select at least one entry first.")
+            return
+        key_set = set(selected)
+        rows = self.read_all_rows()
+        snoozed_count = 0
+        for row in rows[1:]:
+            if len(row) >= 5 and (row[0].strip(), row[1].strip()) in key_set and self.row_needs_followup(row):
+                self.snooze_followup_for_row(row, hours=24)
+                snoozed_count += 1
+
+        if not snoozed_count:
+            QMessageBox.information(self, "Follow-up", "None of the selected cases are currently flagged for follow-up.")
+            return
+
+        self.display_log()
+        self.update_dashboard()
+        self.set_status_message(f"Snoozed {snoozed_count} follow-up case{'s' if snoozed_count != 1 else ''} for 24 hours.")
+
+    def set_email_scanned_count(self, count: int) -> None:
+        self.settings.setValue("email_scanned_count", count)
+        if hasattr(self, "email_scanned_label"):
+            self.email_scanned_label.setText(str(count))
+
+    def prefill_case_from_email(
+        self,
+        subject: str,
+        body: str,
+        sender: str,
+        work_order: str,
+        serial: str,
+        detected_parts: Set[str],
+        issue_patterns: List[str],
+        score: int,
+        suggestion: str,
+    ) -> None:
+        if work_order:
+            self.work_order_edit.setText(work_order)
+        if serial:
+            self.serial_edit.setText(serial)
+        if not self.status_combo.currentText():
+            self.status_combo.setCurrentText("Pending")
+        else:
+            self.status_combo.setCurrentText("Pending")
+
+        self.other_edit.clear()
+        for part_name, button in self.part_buttons.items():
+            button.setChecked(part_name in detected_parts)
+
+        trimmed_body = body.strip()
+        if len(trimmed_body) > 900:
+            trimmed_body = trimmed_body[:900].rstrip() + "..."
+
+        notes = [
+            "Created from email triage.",
+            f"Sender: {sender or 'Unknown'}",
+            f"Subject: {subject or 'No subject'}",
+            f"Suggestion: {suggestion} ({score}%)",
+        ]
+        if issue_patterns:
+            notes.append("Issue patterns: " + ", ".join(issue_patterns))
+        if trimmed_body:
+            notes.append("Email body: " + trimmed_body)
+        self.notes_edit.setPlainText("\n".join(notes))
+        self.work_order_edit.setFocus()
 
     def on_filter_changed(self) -> None:
         self.display_log()
@@ -1245,6 +2140,16 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item.setBackground(QBrush(bg_color))
+                source_row = None
+                for original_row in rows[1:]:
+                    if len(original_row) >= 5 and original_row[0] == row_values[0] and original_row[1] == row_values[1]:
+                        source_row = original_row
+                        break
+                if source_row and self.row_needs_followup(source_row):
+                    item.setToolTip(f"Follow-up flag: {self.followup_reason_for_row(source_row)}. Right-click to snooze for 24 hours.")
+                    item.setForeground(QBrush(QColor("#fde68a")))
+                    if col_idx == 5:
+                        item.setText(item.text() + "  • follow-up")
                 self.table.setItem(row_idx, col_idx, item)
 
         self.filtered_count_label.setText(f"Showing {len(display_rows)} entries")
@@ -1292,6 +2197,14 @@ class MainWindow(QMainWindow):
 
         menu.addSeparator()
 
+        mark_followup_action = QAction("Mark for Follow-up", self)
+        mark_followup_action.triggered.connect(self.mark_selected_followup)
+        menu.addAction(mark_followup_action)
+
+        snooze_action = QAction("Snooze Follow-up 24 Hours", self)
+        snooze_action.triggered.connect(self.snooze_selected_followup)
+        menu.addAction(snooze_action)
+
         edit_action = QAction("Edit Entry", self)
         edit_action.triggered.connect(self.handle_edit_entry)
         menu.addAction(edit_action)
@@ -1301,6 +2214,10 @@ class MainWindow(QMainWindow):
         menu.addAction(delete_action)
 
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def open_email_triage_window(self) -> None:
+        dialog = EmailTriageDialog(self)
+        dialog.exec()
 
     def show_about_dialog(self) -> None:
         text = (
