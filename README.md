@@ -1,6 +1,6 @@
 # 🖥️ Lenovo Case Tracker
 
-A lightweight desktop utility for tracking Lenovo repair cases, parts, and workflow status in real-world IT environments.
+A lightweight desktop utility for tracking Lenovo repair cases, triaging support emails, and managing follow-ups in real-world IT environments.
 
 [![Release](https://img.shields.io/github/v/release/Floodplain4/Lenovo_Console)](https://github.com/Floodplain4/Lenovo_Console/releases)
 [![Downloads](https://img.shields.io/github/downloads/Floodplain4/Lenovo_Console/2.3/total?label=downloads)](https://github.com/Floodplain4/Lenovo_Console/releases/tag/2.3)
@@ -26,34 +26,36 @@ A lightweight desktop utility for tracking Lenovo repair cases, parts, and workf
 
 ## ✨ Features
 
-### 📋 Case Management
-- Track cases using Work Order and Serial Number  
-- Status tracking with notes  
-- Structured CSV-based logging  
+### 📋 Case Tracking
+- Track repair cases by Work Order and Serial Number
+- Manage statuses (Ordered, Pending, Received, Replaced, Returned, Complete)
+- Track parts used and notes for each case
+- Automatic timestamp updates
 
----
+### 📧 Email Triage
+- Scan unread Outlook emails (read-only)
+- Analyze pasted text from emails, tickets, or messages
+- Detect likely support requests with confidence scoring
+- Identify potential hardware issues (LCD, hinges, etc.)
+- Generate suggested responses
+- Create case entries directly from emails
 
-### 🔧 Parts Tracking
-- Quick-select buttons for common parts:
-  - Top lid, Hinges, Bezel, LCD, Keyboard, Motherboard  
-- Optional **“Other”** field for flexibility  
+### ⚠️ Follow-Up System
+- Automatically flags cases not updated in 5 business days
+- Manually mark cases for follow-up
+- Snooze follow-ups for 24 hours
+- Review all flagged cases in one place
 
----
+### 📊 Dashboard & Quick Stats
+- Real-time case counts by status
+- Follow-up alerts
+- Repeat serial detection
+- Email scan tracking
 
-### ⚡ Workflow Automation
-- Paste from Lenovo ticket:
-  - Parses clipboard text  
-  - Auto-fills Work Order and Serial Number  
-  - Detects parts from descriptions  
-
----
-
-### 📊 Dashboard
-- Real-time stats:
-  - Total, Ordered, Pending, Replaced, Returned, Complete  
-- Visual indicators for quick status checks  
-
----
+### 🔧 Workflow Tools
+- Paste-from-ticket parsing (auto-detect serial, work order, parts)
+- Right-click actions (copy serial, work order, summary)
+- CSV import/export with backup
 
 ### 🔄 Entry Management
 - Update status via dropdown  
@@ -112,7 +114,8 @@ python src/lenovo_case_tracker.py
 * Data is stored locally in a CSV file (`lcd_log.csv`)
 * Changes are written instantly
 * No database or internet connection required
-
+- Email features are **read-only** and do not send automatic replies
+- Designed for internal workflow use
 ---
 
 ## ⚠️ Notes
