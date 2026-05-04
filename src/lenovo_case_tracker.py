@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Lenovo Case Tracker"
-APP_VERSION = "v2.4.3"
+APP_VERSION = "v2.4.6"
 LOG_FILE = "lcd_log.csv"
 BACKUP_DIR = "backups"
 ICON_FILE = "lenovo_case_tracker_icon.ico"
@@ -520,43 +520,339 @@ class EmailTriageDialog(QDialog):
             )
             return
 
+        def safe_text(obj, prop_name: str) -> str:
+            try:
+                value = getattr(obj, prop_name)
+                if value is None:
+                    return ""
+                return str(value)
+            except Exception:
+                return ""
+
+        def add_candidate_folder(folder, candidates, seen):
+            try:
+                entry_id = str(folder.EntryID)
+            except Exception:
+                entry_id = str(id(folder))
+            if entry_id not in seen:
+                seen.add(entry_id)
+                candidates.append(folder)
+
+        def find_inbox_folders(folder, candidates, seen, depth=0):
+            if depth > 4:
+                return
+            try:
+                folder_name = str(folder.Name or "").strip().lower()
+                if folder_name == "inbox":
+                    add_candidate_folder(folder, candidates, seen)
+            except Exception:
+                pass
+
+            try:
+                child_folders = folder.Folders
+                for i in range(1, child_folders.Count + 1):
+                    find_inbox_folders(child_folders.Item(i), candidates, seen, depth + 1)
+            except Exception:
+                pass
+
+        def is_probably_unread(message) -> bool:
+            try:
+                unread_value = getattr(message, "UnRead", None)
+                if unread_value in (True, -1, 1):
+                    return True
+            except Exception:
+                pass
+
+            try:
+                flags = int(message.PropertyAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E070003"))
+                return (flags & 1) == 0
+            except Exception:
+                return False
+
+        def add_message_values(sender: str, subject: str, body: str, received: str, entry_id: str, folder_label: str) -> bool:
+            try:
+                if not any([sender, subject, body, received, entry_id]):
+                    return False
+
+                if not entry_id:
+                    entry_id = f"{folder_label}|{subject}|{received}|{sender}"
+
+                for existing in self.scanned_messages:
+                    if existing.get("entry_id") == entry_id:
+                        return False
+
+                details = analyze_email_details(subject, body)
+                self.scanned_messages.append({
+                    "sender": sender,
+                    "subject": subject,
+                    "body": body,
+                    "received": received,
+                    "suggestion": details["suggestion"],
+                    "reason": details["reason"],
+                    "score": details["score"],
+                    "detected_parts": sorted(details["detected_parts"]),
+                    "issue_patterns": [label for label, _parts in details["issue_patterns"]],
+                    "work_order": details["work_order"],
+                    "serial": details["serial"],
+                    "entry_id": entry_id,
+                    "folder": folder_label,
+                })
+                return True
+            except Exception:
+                return False
+
+        def add_message_to_results(message, folder_label: str, require_unread: bool = True, fallback_mode: bool = False) -> bool:
+            try:
+                if require_unread and not is_probably_unread(message):
+                    return False
+
+                if not fallback_mode:
+                    message_class = safe_text(message, "MessageClass")
+                    item_class = safe_text(message, "Class")
+                    if message_class and not message_class.lower().startswith("ipm.note") and item_class not in ("43", ""):
+                        return False
+                    if item_class and item_class != "43" and not message_class.lower().startswith("ipm.note"):
+                        return False
+
+                subject = safe_text(message, "Subject")
+                body = safe_text(message, "Body") or safe_text(message, "HTMLBody")
+                sender = self.get_sender_email(message)
+                received = safe_text(message, "ReceivedTime")
+                entry_id = safe_text(message, "EntryID")
+                return add_message_values(sender, subject, body, received, entry_id, folder_label)
+            except Exception:
+                return False
+
+        def scan_items_by_index(items, folder_label: str, max_items: int, require_unread: bool, fallback_mode: bool) -> int:
+            added = 0
+            try:
+                count = min(int(items.Count), max_items)
+            except Exception:
+                count = max_items
+            for idx in range(1, count + 1):
+                if len(self.scanned_messages) >= 50:
+                    break
+                try:
+                    if add_message_to_results(items.Item(idx), folder_label, require_unread=require_unread, fallback_mode=fallback_mode):
+                        added += 1
+                except Exception:
+                    continue
+            return added
+
+        def scan_folder_table(folder, folder_label: str, namespace, unread_only: bool = True, max_items: int = 50) -> int:
+            """
+            Outlook's Items collection can behave strangely in PyInstaller builds.
+            GetTable is often more reliable because it reads folder rows directly.
+            """
+            added = 0
+            filters = []
+            if unread_only:
+                filters = [
+                    '@SQL="http://schemas.microsoft.com/mapi/proptag/0x0E070003" & 1 = 0',
+                    "[Unread] = True",
+                ]
+            else:
+                filters = [None]
+
+            for table_filter in filters:
+                if len(self.scanned_messages) >= 50:
+                    break
+                try:
+                    table = folder.GetTable(table_filter) if table_filter else folder.GetTable()
+                    try:
+                        table.Sort("[ReceivedTime]", True)
+                    except Exception:
+                        pass
+
+                    try:
+                        cols = table.Columns
+                        cols.RemoveAll()
+                        # PR_ENTRYID, Subject, SenderEmailAddress, ReceivedTime, MessageClass, MessageFlags
+                        cols.Add("http://schemas.microsoft.com/mapi/proptag/0x0FFF0102")
+                        cols.Add("Subject")
+                        cols.Add("SenderEmailAddress")
+                        cols.Add("ReceivedTime")
+                        cols.Add("MessageClass")
+                        cols.Add("http://schemas.microsoft.com/mapi/proptag/0x0E070003")
+                    except Exception:
+                        pass
+
+                    checked = 0
+                    while not table.EndOfTable and checked < max_items and len(self.scanned_messages) < 50:
+                        checked += 1
+                        try:
+                            row = table.GetNextRow()
+                            subject = str(row.get("Subject", "") or "")
+                            sender = str(row.get("SenderEmailAddress", "") or "")
+                            received = str(row.get("ReceivedTime", "") or "")
+                            message_class = str(row.get("MessageClass", "") or "")
+                            flags_value = row.get("http://schemas.microsoft.com/mapi/proptag/0x0E070003", None)
+                            if unread_only and flags_value is not None:
+                                try:
+                                    if int(flags_value) & 1:
+                                        continue
+                                except Exception:
+                                    pass
+                            if message_class and not message_class.lower().startswith("ipm.note"):
+                                continue
+
+                            entry_id_value = row.get("http://schemas.microsoft.com/mapi/proptag/0x0FFF0102", "")
+                            entry_id = ""
+                            try:
+                                # EntryID from GetTable can be bytes. Convert to hex string for GetItemFromID.
+                                if isinstance(entry_id_value, (bytes, bytearray)):
+                                    entry_id = entry_id_value.hex().upper()
+                                else:
+                                    entry_id = str(entry_id_value or "")
+                            except Exception:
+                                entry_id = ""
+
+                            body = ""
+                            if entry_id:
+                                try:
+                                    msg = namespace.GetItemFromID(entry_id, safe_text(folder.Store, "StoreID"))
+                                    body = safe_text(msg, "Body") or safe_text(msg, "HTMLBody")
+                                    if not sender:
+                                        sender = self.get_sender_email(msg)
+                                    if not subject:
+                                        subject = safe_text(msg, "Subject")
+                                    if not received:
+                                        received = safe_text(msg, "ReceivedTime")
+                                except Exception:
+                                    pass
+
+                            # Even if body cannot be read, subject/sender is enough to triage.
+                            if add_message_values(sender, subject, body, received, entry_id, folder_label):
+                                added += 1
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+            return added
+
         try:
             pythoncom.CoInitialize()
-            outlook = win32com.client.Dispatch("Outlook.Application")
+
+            try:
+                outlook = win32com.client.GetActiveObject("Outlook.Application")
+            except Exception:
+                outlook = win32com.client.Dispatch("Outlook.Application")
+
             namespace = outlook.GetNamespace("MAPI")
-            inbox = namespace.GetDefaultFolder(6)
-            messages = inbox.Items.Restrict("[UnRead] = True")
+            try:
+                namespace.Logon(None, None, False, False)
+            except Exception:
+                pass
+
+            candidates = []
+            seen = set()
+
+            try:
+                add_candidate_folder(namespace.GetDefaultFolder(6), candidates, seen)
+            except Exception:
+                pass
+
+            try:
+                roots = namespace.Folders
+                for i in range(1, roots.Count + 1):
+                    find_inbox_folders(roots.Item(i), candidates, seen)
+            except Exception:
+                pass
 
             self.scanned_messages = []
-            for message in list(messages)[:50]:
+            checked_count = 0
+            folder_summaries = []
+            unread_folder_total = 0
+
+            for folder in candidates:
+                if len(self.scanned_messages) >= 50:
+                    break
+
                 try:
-                    subject = str(message.Subject or "")
-                    body = str(message.Body or "")
-                    sender = self.get_sender_email(message)
-                    received = str(message.ReceivedTime)
-                    details = analyze_email_details(subject, body)
-                    self.scanned_messages.append({
-                        "sender": sender,
-                        "subject": subject,
-                        "body": body,
-                        "received": received,
-                        "suggestion": details["suggestion"],
-                        "reason": details["reason"],
-                        "score": details["score"],
-                        "detected_parts": sorted(details["detected_parts"]),
-                        "issue_patterns": [label for label, _parts in details["issue_patterns"]],
-                        "work_order": details["work_order"],
-                        "serial": details["serial"],
-                        "entry_id": str(message.EntryID),
-                    })
+                    folder_name = str(folder.Name or "Inbox")
+                    parent_name = ""
+                    try:
+                        parent_name = str(folder.Parent.Name or "")
+                    except Exception:
+                        pass
+                    folder_label = f"{parent_name}/{folder_name}" if parent_name else folder_name
+
+                    try:
+                        folder_unread = int(folder.UnReadItemCount)
+                    except Exception:
+                        folder_unread = -1
+
+                    if folder_unread > 0:
+                        unread_folder_total += folder_unread
+                    folder_summaries.append(f"{folder_label}: {folder_unread if folder_unread >= 0 else '?'} unread")
+
+                    before_folder = len(self.scanned_messages)
+
+                    # Method 1: folder table unread scan. This is the main PyInstaller fix.
+                    checked_count += max(folder_unread, 0)
+                    scan_folder_table(folder, folder_label, namespace, unread_only=True, max_items=100)
+
+                    # Method 2: normal Items scan fallback.
+                    try:
+                        messages = folder.Items
+                        try:
+                            messages.Sort("[ReceivedTime]", True)
+                        except Exception:
+                            pass
+                        checked_count += min(int(messages.Count), 300)
+                        scan_items_by_index(messages, folder_label, 300, require_unread=True, fallback_mode=False)
+                    except Exception:
+                        pass
+
+                    # Method 3: if unread exists but nothing imported, import latest rows from folder table.
+                    if folder_unread > 0 and len(self.scanned_messages) == before_folder:
+                        scan_folder_table(folder, folder_label, namespace, unread_only=False, max_items=min(max(folder_unread, 10), 25))
+                        try:
+                            messages = folder.Items
+                            try:
+                                messages.Sort("[ReceivedTime]", True)
+                            except Exception:
+                                pass
+                            scan_items_by_index(messages, folder_label, min(max(folder_unread, 10), 25), require_unread=False, fallback_mode=True)
+                        except Exception:
+                            pass
+
                 except Exception:
                     continue
 
             self.refresh_table()
             self.parent_window.set_email_scanned_count(len(self.scanned_messages))
-            self.parent_window.set_status_message(f"Email triage scanned {len(self.scanned_messages)} unread messages.")
+            self.parent_window.set_status_message(
+                f"Email triage checked {checked_count} Outlook item(s) across {len(candidates)} Inbox folder(s) and imported {len(self.scanned_messages)} message(s)."
+            )
+
+            if len(self.scanned_messages) == 0:
+                folder_text = "\n".join(folder_summaries[:8]) if folder_summaries else "No Inbox folders were found."
+                QMessageBox.information(
+                    self,
+                    "No Emails Imported",
+                    "Outlook reports unread mail, but no readable mail items could be imported.\n\n"
+                    "Scanned folders:\n"
+                    f"{folder_text}\n\n"
+                    "This appears to be a PyInstaller/Outlook COM access issue.\n"
+                    "As a workaround, use Analyze Pasted Text, or rebuild using --onedir instead of --onefile for testing."
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Email Scan Complete",
+                    f"Imported {len(self.scanned_messages)} message(s) for review.\n\n"
+                    "No emails were modified or marked read."
+                )
+
         except Exception as e:
-            QMessageBox.critical(self, "Outlook Error", f"Could not scan Outlook:\n{str(e)}")
+            QMessageBox.critical(
+                self,
+                "Outlook Error",
+                "Could not scan Outlook.\n\n"
+                "Make sure Outlook classic is open, then try again.\n\n"
+                f"Error: {str(e)}",
+            )
         finally:
             try:
                 pythoncom.CoUninitialize()
