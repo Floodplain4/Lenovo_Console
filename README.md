@@ -136,7 +136,7 @@
 
 ```bash
 pip install PySide6 pyperclip
-python Lenovo_Case_Tracker2.28.py
+python Lenovo_Case_Tracker.py
 ```
 
 ---
