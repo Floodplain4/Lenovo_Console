@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # 🖥️ Lenovo Case Tracker
 
 A lightweight desktop utility for tracking Lenovo repair cases, triaging support emails, and managing follow-ups in real-world IT environments.
@@ -241,4 +240,3 @@ At the same time, I have been using the project to improve:
 - Improve dashboard analytics
 - Package updated SQLite version into a stable EXE release
 - Explore possible future web-based version
->>>>>>> sqlite-ui
