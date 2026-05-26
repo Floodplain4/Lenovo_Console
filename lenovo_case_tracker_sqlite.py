@@ -1649,10 +1649,15 @@ class MainWindow(QMainWindow):
         quick_layout.addWidget(QLabel("Repeat Serials"), 2, 1)
         quick_layout.addWidget(QLabel("Emails Scanned"), 2, 2)
 
-        self.review_followups_button = QPushButton("Review")
+        self.review_followups_button = QPushButton("Review Follow-ups")
         self.review_followups_button.setFixedHeight(24)
         self.review_followups_button.clicked.connect(self.open_followup_review_window)
         quick_layout.addWidget(self.review_followups_button, 3, 0, 1, 3)
+
+        self.review_repeats_button = QPushButton("Review Repeat Serials")
+        self.review_repeats_button.setFixedHeight(24)
+        self.review_repeats_button.clicked.connect(self.open_repeat_serials_window)
+        quick_layout.addWidget(self.review_repeats_button, 4, 0, 1, 3)
 
         for i in range(quick_layout.count()):
             widget = quick_layout.itemAt(i).widget()
@@ -1662,8 +1667,8 @@ class MainWindow(QMainWindow):
 
         quick_panel.setMinimumWidth(290)
         quick_panel.setMaximumWidth(330)
-        quick_panel.setMinimumHeight(86)
-        quick_panel.setMaximumHeight(94)
+        quick_panel.setMinimumHeight(116)
+        quick_panel.setMaximumHeight(128)
         stats_row.addWidget(quick_panel)
         layout.addLayout(stats_row)
         self.main_layout.addWidget(overview)
@@ -2535,15 +2540,32 @@ class MainWindow(QMainWindow):
         rows = self.read_all_rows()
         return [row for row in rows[1:] if self.row_needs_followup(row)]
 
-    def repeat_serial_count(self) -> int:
-        serial_counts = {}
+    def repeat_serial_groups(self) -> dict:
+        """Return serial numbers that appear on more than one case."""
+        groups = {}
         rows = self.read_all_rows()
         for row in rows[1:]:
             if len(row) >= 2:
                 serial = row[1].strip().upper()
                 if serial:
-                    serial_counts[serial] = serial_counts.get(serial, 0) + 1
-        return sum(1 for count in serial_counts.values() if count >= 2)
+                    groups.setdefault(serial, []).append(row)
+        return {serial: case_rows for serial, case_rows in groups.items() if len(case_rows) >= 2}
+
+    def repeat_serial_count(self) -> int:
+        return len(self.repeat_serial_groups())
+
+    def is_repeat_serial_row(self, row: List[str]) -> bool:
+        if len(row) < 2:
+            return False
+        serial = row[1].strip().upper()
+        return serial in self.repeat_serial_groups()
+
+    def repeat_serial_reason_for_row(self, row: List[str]) -> str:
+        if len(row) < 2:
+            return ""
+        serial = row[1].strip().upper()
+        count = len(self.repeat_serial_groups().get(serial, []))
+        return f"Serial {serial} appears on {count} cases" if count else ""
 
     def update_quick_stats(self) -> None:
         if hasattr(self, "followup_count_label"):
@@ -2555,7 +2577,68 @@ class MainWindow(QMainWindow):
             self.email_scanned_label.setText(str(current_email_count))
             if hasattr(self, "review_followups_button"):
                 self.review_followups_button.setEnabled(True)
-                self.review_followups_button.setText("Review")
+                self.review_followups_button.setText("Review Follow-ups")
+            if hasattr(self, "review_repeats_button"):
+                repeat_count = self.repeat_serial_count()
+                self.review_repeats_button.setEnabled(repeat_count > 0)
+                self.review_repeats_button.setText("Review Repeat Serials")
+
+    def open_repeat_serials_window(self) -> None:
+        repeat_groups = self.repeat_serial_groups()
+        if not repeat_groups:
+            QMessageBox.information(self, "Repeat Serials", "No repeat serial numbers were found.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Repeat Serial Numbers")
+        dialog.resize(900, 460)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(8)
+
+        intro = QLabel(
+            "These serial numbers appear on more than one case. This can help spot repeat repairs, duplicate entries, or devices that may need a closer look."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        table = QTableWidget(0, 5)
+        table.setHorizontalHeaderLabels(["Serial Number", "Count", "Work Orders", "Statuses", "Latest Timestamp"])
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+
+        sorted_groups = sorted(
+            repeat_groups.items(),
+            key=lambda item: (len(item[1]), max((row[4] for row in item[1] if len(row) >= 5), default="")),
+            reverse=True,
+        )
+        table.setRowCount(len(sorted_groups))
+        for row_idx, (serial, case_rows) in enumerate(sorted_groups):
+            work_orders = ", ".join(row[0] for row in case_rows if len(row) >= 1 and row[0])
+            statuses = ", ".join(sorted({row[2] for row in case_rows if len(row) >= 3 and row[2]}))
+            latest = max((row[4] for row in case_rows if len(row) >= 5), default="")
+            values = [serial, str(len(case_rows)), work_orders, statuses, latest]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                table.setItem(row_idx, col_idx, item)
+
+        layout.addWidget(table, 1)
+
+        button_row = QHBoxLayout()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        button_row.addStretch(1)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        dialog.exec()
 
     def open_followup_review_window(self) -> None:
         followups = self.cases_needing_followup()
@@ -2783,11 +2866,19 @@ class MainWindow(QMainWindow):
                     if len(original_row) >= 5 and original_row[0] == row_values[0] and original_row[1] == row_values[1]:
                         source_row = original_row
                         break
-                if source_row and self.row_needs_followup(source_row):
-                    item.setToolTip(f"Follow-up flag: {self.followup_reason_for_row(source_row)}. Right-click to snooze for 24 hours.")
-                    item.setForeground(QBrush(QColor("#fde68a")))
-                    if col_idx == 5:
-                        item.setText(item.text() + "  • follow-up")
+                if source_row:
+                    tooltip_parts = []
+                    if self.row_needs_followup(source_row):
+                        tooltip_parts.append(f"Follow-up flag: {self.followup_reason_for_row(source_row)}. Right-click to snooze for 24 hours.")
+                        item.setForeground(QBrush(QColor("#fde68a")))
+                        if col_idx == 5:
+                            item.setText(item.text() + "  • follow-up")
+                    if self.is_repeat_serial_row(source_row):
+                        tooltip_parts.append(self.repeat_serial_reason_for_row(source_row))
+                        if col_idx == 1 and "• repeat" not in item.text():
+                            item.setText(item.text() + "  • repeat")
+                    if tooltip_parts:
+                        item.setToolTip("\n".join(tooltip_parts))
                 self.table.setItem(row_idx, col_idx, item)
 
         self.filtered_count_label.setText(f"Showing {len(display_rows)} entries")
