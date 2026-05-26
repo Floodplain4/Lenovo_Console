@@ -2016,7 +2016,7 @@ class MainWindow(QMainWindow):
         for row in range(self.table.rowCount()):
             work_item = self.table.item(row, 0)
             serial_item = self.table.item(row, 1)
-            if work_item and serial_item and work_item.text().replace("⚠", "").strip() == work_order.strip() and serial_item.text().strip() == serial_number.strip():
+            if work_item and serial_item and work_item.text().replace("⚠", "").strip() == work_order.strip() and self.clean_display_serial(serial_item.text()) == serial_number.strip():
                 self.table.selectRow(row)
                 self.table.scrollToItem(self.table.item(row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
                 self.set_status_message(f"Selected existing entry {work_order} / {serial_number}.")
@@ -2028,14 +2028,20 @@ class MainWindow(QMainWindow):
     def clean_display_work_order(self, text: str) -> str:
         return text.replace("⚠", "").strip()
 
+    def clean_display_serial(self, text: str) -> str:
+        return text.replace("• repeat", "").strip()
+
     def selected_row_keys(self) -> List[Tuple[str, str]]:
         keys = []
         for index in self.table.selectionModel().selectedRows():
             row = index.row()
-            work_order_item = self.table.item(row, 0)
-            serial_item = self.table.item(row, 1)
-            if work_order_item and serial_item:
-                keys.append((self.clean_display_work_order(work_order_item.text()), serial_item.text().strip()))
+        work_order_item = self.table.item(row, 0)
+        serial_item = self.table.item(row, 1)
+        if work_order_item and serial_item:
+            keys.append((
+                self.clean_display_work_order(work_order_item.text()),
+                self.clean_display_serial(serial_item.text())
+            ))
         return keys
 
     def clear_add_entry_form(self) -> None:
