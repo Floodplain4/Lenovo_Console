@@ -1,31 +1,61 @@
 # Lenovo Case Tracker
 
-A small desktop app I built to track Lenovo repair cases, parts, statuses, and notes.
+A desktop utility I built for tracking Lenovo repair cases, statuses, parts, notes, and repeat hardware issues.
 
-This started as a simple CSV-based tracker for day-to-day field tech work. It has grown into a more useful repair tracking tool with search, filters, status updates, CSV import/export, and now SQLite storage.
+This originally started as a basic CSV tracker for day-to-day field tech work and slowly turned into a more complete repair tracking application. The current version uses SQLite instead of relying entirely on CSV storage and includes a more responsive UI layout, repeat serial tracking, filtering, import/export support, and repair workflow management.
 
-## Current Branch
+## Current Development Branch
 
 `sqlite-ui`
 
-This branch moves the app from CSV storage to a local SQLite database and improves the layout so the UI works better when the window size or screen resolution changes.
+This branch contains the ongoing SQLite/database migration work and UI cleanup before merging back into main.
 
-## What It Does
+## Features
 
-- Tracks Lenovo cases by work order and serial number
-- Stores repair status, parts, notes, and timestamps
-- Supports searching and filtering entries
-- Lets entries be added, edited, updated, and deleted
-- Imports old CSV records into SQLite
-- Exports current records back to CSV
-- Uses a local SQLite database instead of relying on the CSV as the main data source
-- Keeps database and CSV files out of Git so real repair data is not uploaded
+- Track Lenovo repair cases by:
+  - Work Order
+  - Serial Number
+  - Status
+  - Parts
+  - Notes
+  - Timestamp
 
-## Why I Changed It
+- Add, edit, update, and delete repair entries
+- Search across all visible case data
+- Filter by:
+  - Status
+  - Parts
 
-The original version worked, but CSV storage was starting to feel limiting. I had hundreds of entries from this year alone, and I wanted the app to behave more like a real database-backed application.
+- CSV import/export support
+- SQLite database backend
+- Responsive UI improvements for smaller/windowed displays
+- Repeat serial number detection
+- Dashboard statistics
+- Follow-up tracking
+- Email triage tools for ticket review workflow
 
-SQLite made sense because it is lightweight, local, easy to ship with a desktop app, and still lets me practice real SQL/database development.
+## Repeat Serial Detection
+
+One of the newer additions is repeat serial detection.
+
+The app tracks devices that appear multiple times in the repair log and allows quick review of:
+- Repeat repair counts
+- Previous work orders
+- Repair statuses
+- Latest timestamps
+
+This was added because recurring hardware issues became difficult to track manually once the dataset grew larger.
+
+## Why SQLite
+
+The original CSV version worked fine for smaller datasets, but it started becoming harder to manage once the repair log reached several hundred entries.
+
+Migrating to SQLite made it easier to:
+- Search and filter efficiently
+- Handle larger datasets
+- Reduce duplicate handling issues
+- Move toward a more maintainable application structure
+- Practice real database-backed application development
 
 ## Tech Used
 
@@ -37,14 +67,22 @@ SQLite made sense because it is lightweight, local, easy to ship with a desktop 
 
 ## Notes
 
-This is still a practical internal workflow tool first. I am using it as a way to improve the app while also practicing better software development habits: version control, database-backed storage, cleaner imports, and safer UI changes.
+This project is still primarily a practical internal workflow tool. Most changes are driven by real-world repair tracking and field tech workflow issues rather than building features just for the sake of adding them.
+
+At the same time, I have been using the project to improve:
+- Database design
+- Version control workflow
+- UI structure
+- Application organization
+- General software development practices
 
 ## Roadmap
 
-- Clean up older CSV-related code
-- Improve error handling during imports
-- Add better duplicate detection
-- Add status history
-- Improve dashboard/reporting
-- Add screenshots to the README
-- Package the SQLite version as a new release
+- Clean up remaining CSV-era logic
+- Improve database structure and normalization
+- Add status history tracking
+- Improve error handling and import validation
+- Add screenshots/GIF demos to README
+- Improve dashboard analytics
+- Package updated SQLite version into a stable EXE release
+- Explore possible future web-based version
