@@ -54,7 +54,7 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Lenovo Case Tracker"
-APP_VERSION = "v2.4.7-layout"
+APP_VERSION = "v2.5.0"
 LOG_FILE = "lcd_log.csv"  # legacy export/import name
 DB_NAME = "lenovo_tracker.db"
 BACKUP_DIR = "backups"
