@@ -59,6 +59,7 @@ LOG_FILE = "lcd_log.csv"  # legacy export/import name
 DB_NAME = "lenovo_tracker.db"
 BACKUP_DIR = "backups"
 ICON_FILE = "lenovo_case_tracker_icon.ico"
+ASSETS_DIR = "assets"
 
 
 def app_storage_path(filename: str) -> str:
@@ -172,10 +173,12 @@ EMAIL_ISSUE_PATTERNS = [
 
 
 def resource_path(relative_path: str) -> str:
-    """
-    Resolve resource paths for normal execution and PyInstaller one-file builds.
-    """
-    base_path = getattr(sys, "_MEIPASS", os.path.abspath("."))
+    """Get absolute path to resource for dev and PyInstaller."""
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
     return os.path.join(base_path, relative_path)
 
 
@@ -3003,11 +3006,15 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("Tyler Ledbetter")
     app.setStyle("Fusion")
 
-    icon_path = resource_path(ICON_FILE)
+    icon_path = resource_path(
+        os.path.join(ASSETS_DIR, ICON_FILE)
+    )
+
     if os.path.exists(icon_path):
         app_icon = QIcon(icon_path)
         app.setWindowIcon(app_icon)
