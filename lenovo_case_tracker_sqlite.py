@@ -647,6 +647,7 @@ class EmailTriageDialog(QDialog):
         self.setWindowTitle("Email Triage")
         self.resize(1180, 700)
         self.scanned_messages = []
+        self.setWindowIcon(QIcon("lenovo_case_tracker_icon.ico"))
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -3008,9 +3009,14 @@ def main() -> None:
 
     icon_path = resource_path(ICON_FILE)
     if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
+        app_icon = QIcon(icon_path)
+        app.setWindowIcon(app_icon)
 
     window = MainWindow()
+
+    if os.path.exists(icon_path):
+        window.setWindowIcon(app_icon)
+
     window.show()
     sys.exit(app.exec())
 
